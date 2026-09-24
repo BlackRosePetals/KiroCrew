@@ -80,6 +80,7 @@ from kiro_crew.validation import (
     WAIT_SCHEMA,
     ValidationError,
     validate_ask_user_question,
+    validate_judge_spec,
     validate_tool_args,
 )
 
@@ -597,6 +598,61 @@ def schemas() -> list[dict[str, Any]]:
                             "the dashboard transcript renders it"
                         ),
                     },
+                    "judge": {
+                        "type": ["object", "boolean"],
+                        "description": (
+                            "Optional WAKE JUDGE: say in plain words what is worth "
+                            "waking this session for, and a cycle with nothing new "
+                            "costs no turn at all. Before each cycle the evidence "
+                            "your watched targets produced since the last one — a "
+                            "watched session's new assistant lines, a watched pull "
+                            "request's typed state and check tallies — is read and "
+                            "answered against these two sentences. Reach for it "
+                            "whenever what decides the answer is PROSE no typed "
+                            "check can evaluate: worker transcripts you are "
+                            "patrolling, or your own criterion applied to a pull "
+                            "request's state. It never ends "
+                            "the loop and it never silences one indefinitely — after "
+                            "a run of quiet cycles one fires anyway — so a wrong "
+                            "answer costs a late turn, not a missed one. You do not "
+                            "have to pass it: once the evidence scope is granted, a "
+                            "gated loop is screened on every cycle under a default "
+                            "brief that asks whether the subject needs its owner, and "
+                            "these two sentences REPLACE that default with your own. "
+                            "Pass `false` to bypass the judge entirely; a `gate=false` "
+                            "loop is never screened, since its duty is to act while "
+                            "its subject is quiet"
+                        ),
+                        "properties": {
+                            "wake_when": {
+                                "type": "string",
+                                "description": (
+                                    "What genuinely needs this session's attention, "
+                                    'in one sentence, e.g. "a worker line starts '
+                                    'with RULING or BLOCKED" or "a reviewer asked '
+                                    'for a change"'
+                                ),
+                            },
+                            "quiet_when": {
+                                "type": "string",
+                                "description": (
+                                    "What is progress not worth a turn, in one "
+                                    'sentence, e.g. "workers report WORKING with '
+                                    'no new status" or "checks are still running"'
+                                ),
+                            },
+                            "targets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Optional. What to read evidence from: dashboard "
+                                    "chat keys (`chat-...`) and pull-request URLs. "
+                                    "Omit it and the ones named in `message` are "
+                                    "used, which is usually what you want"
+                                ),
+                            },
+                        },
+                    },
                 },
                 "required": ["message"],
             },
@@ -686,6 +742,44 @@ def schemas() -> list[dict[str, Any]]:
                             "non-blank banner on a channel-bound loop "
                             "(`slack:`/`discord:`/`webex:`) is refused with a 400"
                         ),
+                    },
+                    "judge": {
+                        "type": ["object", "boolean"],
+                        "description": (
+                            "Revise the WAKE JUDGE on this loop, or arm one on a loop "
+                            "that has none. Pass the two sentences again to replace "
+                            "them; pass an empty object to drop your own criteria, "
+                            "after which a gated loop runs under the default brief; "
+                            "pass `false` to bypass the judge entirely, after which "
+                            "every cycle fires as a plain timer again. Omit it "
+                            "to leave the current brief untouched. Revising resets "
+                            "the quiet-cycle count and the read positions, because "
+                            "both describe the brief you are replacing"
+                        ),
+                        "properties": {
+                            "wake_when": {
+                                "type": "string",
+                                "description": (
+                                    "What genuinely needs this session's attention, "
+                                    "in one sentence"
+                                ),
+                            },
+                            "quiet_when": {
+                                "type": "string",
+                                "description": (
+                                    "What is progress not worth a turn, in one " "sentence"
+                                ),
+                            },
+                            "targets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Optional. What to read evidence from: dashboard "
+                                    "chat keys (`chat-...`) and pull-request URLs. "
+                                    "Omit it and the ones named in `message` are used"
+                                ),
+                            },
+                        },
                     },
                 },
             },
@@ -1386,6 +1480,13 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # contract test asserts this dict by EXACT equality. The applier reads it
     # with ``.get``, so absent and empty mean the same thing there.
     banner = str(args.get("banner") or "").strip()
+    # The judge brief, bounded HERE rather than at the applier: this is the surface
+    # the owner typed it at, so a refusal names the field they can fix. The schema
+    # only says the value is an object; these are the bounds on what it may hold.
+    try:
+        judge_spec = validate_judge_spec(args.get("judge"))
+    except ValidationError as exc:
+        return f"monitor_start: {exc.field}: {exc.message}"
     # Before the payload is built, so the emitted dict is byte-identical to what
     # it was (its shape is asserted by exact equality in the contract test) and a
     # certain refusal is reported instead of acknowledged.
@@ -1401,6 +1502,11 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     }
     if banner:
         payload["banner"] = banner
+    # CONDITIONAL for the reason ``banner`` is: a caller that arms no judge must see
+    # the payload shape it saw before, which the contract test asserts by exact
+    # equality. The applier reads it with ``.get``, so absent and empty agree there.
+    if judge_spec:
+        payload["judge"] = judge_spec
     # Say whether this loop will be GATED, in the ack, at the surface that armed
     # it. This calls the SCHEDULER'S OWN decision function rather than
     # re-deriving the answer from the target: a subject can infer cleanly and
@@ -1787,13 +1893,26 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
     # down and losing its cycle count.
     if args.get("banner") is not None:
         patch["banner"] = str(args["banner"]).strip()
+    # An empty object is KEPT, for the reason a blank banner is: ``{}`` is how an
+    # owner's own CRITERIA come off a live loop, which returns it to the shipped
+    # default brief rather than taking the judge off -- ``false`` is the bypass, and
+    # it normalises to a reserved marker instead of to this shape. Dropping ``{}`` as
+    # "unchanged" would make a brief set once impossible to clear without tearing the
+    # loop down. Validated here as well as on the arm path, because this is the other
+    # door into the same stored field and an unvalidated one would be the way around
+    # the bound.
+    if args.get("judge") is not None:
+        try:
+            patch["judge"] = validate_judge_spec(args["judge"])
+        except ValidationError as exc:
+            return f"monitor_update: {exc}"
     if not patch:
         mcp_core.sel().log_tool_invocation(
             session_key=sk, source="mcp", tool_name="monitor_update", outcome="noop"
         )
         return (
             "monitor_update: nothing to change — pass at least one of "
-            "message, interval_secs, max_cycles, max_runtime_secs."
+            "message, interval_secs, max_cycles, max_runtime_secs, judge."
         )
     # AFTER the empty-patch no-op so that more specific answer still wins. A
     # retained stop cannot be updated either: ``update_monitor`` answers "not found

@@ -7951,10 +7951,178 @@ class GatewayOrchestrator:
                     # closes exactly that with an explicitly terminal `interrupted`.
                     _publish()
 
+        async def _collect_judge_evidence(loop: NudgeLoop) -> tuple[list[dict], int, dict]:
+            """The wake judge's evidence for one tick: new worker rows, plus the probe.
+
+            A closure rather than a method on the service, for the reason ``_fire`` and
+            ``_monitor_owner_session_id`` are: authorizing a transcript read needs
+            ``dashboard_state``, which ``AutoNudgeService`` does not hold.
+
+            Creator-only by REUSE, not by a second check. ``read_messages`` calls
+            ``authorize_target`` before it returns a row, so a target this loop's owner
+            may not read raises and is counted as dropped. Nothing here decides who may
+            read what.
+
+            ``since`` is the loop's own per-target cursor, so each tick sees only what
+            arrived after the last one, and the cursor advances only on a read that
+            actually returned -- a refusal leaves it where it was rather than skipping
+            the rows it would have served.
+            """
+            from kiro_crew import autonudge_judge as _judge
+            from kiro_crew.dashboard import session_control as _sc
+
+            state = self.dashboard_state
+            if state is None:
+                # No cursors either, and an empty map is the truthful third value: with
+                # no dashboard state nothing was read, so nothing advanced.
+                return [], 0, {}
+
+            async def _read_session(target: str, since: int) -> tuple[list[dict], int]:
+                # Off the loop: this authorizes, may write a SEL row, and reads slot
+                # state. Raises on refusal, which the collector counts as a drop.
+                #
+                # The limit MUST match what the collector retains. ``next_since``
+                # follows the returned window, and ``session_evidence`` keeps only the
+                # last ``MAX_ROWS_PER_TARGET`` rows, so a wider page advances the
+                # cursor across rows that are then discarded and never read again: a
+                # 20-row burst loses its oldest 8, which is where an actionable line
+                # sits when a worker posted several since the last tick. Reading
+                # exactly what is retained turns that loss into a later tick.
+                payload = await asyncio.to_thread(
+                    _sc.read_messages,
+                    state,
+                    caller_session_key=loop.slot_key,
+                    target=target,
+                    limit=_judge.MAX_ROWS_PER_TARGET,
+                    since=since or None,
+                )
+                rows = payload.get("messages") or []
+                cursor = payload.get("next_since")
+                return list(rows), int(cursor) if isinstance(cursor, int) else since
+
+            async def _read_pr(target: str) -> dict | None:
+                # The observation the typed probe ALREADY made this tick, never a fresh
+                # fetch: re-asking the forge would spend a subprocess to learn what the
+                # monitor record already holds, and the judge's job is the owner's own
+                # prose criterion read against those facts.
+                monitor = loop.monitor
+                observed = getattr(monitor, "last_observation", None) if monitor else None
+                if monitor is None or not isinstance(observed, dict):
+                    return None
+                # A factless observation is an UNREAD target only when nothing read the
+                # subject this tick. The canonical field has one writer, the structured
+                # controller's provider, and a judged loop is a GATED one observing
+                # through the raise-based kernel, whose verdict carries no facts -- so
+                # this reader sees an empty canonical for every loop the judge screens.
+                # On that path the probe HAS read this subject and returned quiet, which
+                # is the only reason the judge is being asked, so the subject is read and
+                # this target is not a drop: it contributes nothing and the probe's own
+                # quiet stands. Calling it unread would fire a turn the probe already
+                # settled, every interval, for the life of the watch.
+                probe_covers_subject = monitor.outcome is None and bool(
+                    getattr(loop, "gate", False)
+                )
+                if _judge.pr_target_is_unread(observed, probe_covers_subject=probe_covers_subject):
+                    logger.debug(
+                        "AutoNudge: no pull-request reading for loop %s -- counting the "
+                        "target as unread",
+                        loop.id,
+                    )
+                    return None
+                # A loop holds ONE monitor, so this returns the same observation for
+                # every subject it is asked about. The brief's targets are the owner's
+                # strings and may name a DIFFERENT pull request, which would label the
+                # row with that name while carrying the watched subject's state.
+                if not _judge.pr_observation_is_about(
+                    target,
+                    monitor_kind=str(getattr(monitor, "kind", "") or ""),
+                    monitor_target=str(getattr(monitor, "target", "") or ""),
+                    observation=observed,
+                ):
+                    logger.debug(
+                        "AutoNudge: a judge brief named a pull request this loop does not watch"
+                    )
+                    return None
+                # ``last_observed_at`` is a SIBLING field of the canonical object, not a
+                # key inside it, so the collector cannot age the reading without being
+                # handed it. Added to the copy, which leaves the monitor's own canonical
+                # dict -- whose exact shape is pinned by equality tests and hashed into
+                # the wake fingerprint -- untouched.
+                payload = dict(observed)
+                at = getattr(monitor, "last_observed_at", 0.0)
+                if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0:
+                    payload["observed_at"] = float(at)
+                return payload
+
+            targets = _judge.parse_targets(_judge.spec_of(loop), loop.message)
+            # Pruned to the targets this tick actually reads, not merely copied. The
+            # collector only ever ADDS a key, the targets come from ``loop.message``, and
+            # ``asdict`` persists whatever the map holds, so without this a retarget
+            # leaves the departed target's cursor in the store for the life of the loop.
+            #
+            # Pruning at the write is what bounds retention in the process doing the
+            # writing. The load cap is not that bound: it keeps an arbitrary 16, so it
+            # can discard the cursor of a target still being read, and a lost cursor
+            # replays rows the judge already screened. With the population pruned to the
+            # current targets, the two bounds that disagree -- 16 cursors against 8
+            # targets -- collapse into the smaller one and the cap never binds.
+            wanted = set(targets)
+            cursors = {t: c for t, c in loop.judge_cursors.items() if t in wanted}
+            evidence, dropped = await _judge.collect_evidence(
+                targets,
+                read_session=_read_session,
+                read_pr=_read_pr,
+                cursors=cursors,
+            )
+            # RETURNED, not assigned onto the loop. The advanced positions are a
+            # consequence of a reading that has not been judged yet, and the judge await
+            # that follows is cancellable -- a user typing cancels exactly that task --
+            # so publishing here moves the cursors for a verdict that never commits. The
+            # next tick then reads nothing new, answers quiet, and the wake the skipped
+            # row had earned is gone. The caller owns the one point where a verdict is
+            # committed, so the caller publishes them.
+            return evidence, dropped, cursors
+
+        async def _emit_judge_notice(loop: NudgeLoop, line: str) -> None:
+            """Write ONE ``notice`` row on the owning session for a judge verdict.
+
+            The same surface a refused arm uses (``_surface_arm_refusal``): a row of
+            its own, because that is what reaches whoever is watching the session
+            without costing a turn. A quiet verdict is exactly the case that needs
+            it: without a row, a loop that judged and stayed quiet looks identical
+            to a loop that died.
+
+            The row is scrubbed before it is persisted or broadcast, like every
+            other transcript egress. It carries probabilities and counts, never
+            evidence text: the state stays in the request, and the transcript gets
+            the verdict.
+
+            Notice rows are NOT evidence. The session collector admits assistant
+            rows only, so a judge can never read its own previous notice back as
+            new evidence about the session it is watching.
+            """
+            state = self.dashboard_state
+            if state is None:
+                return
+            # ``get_slot`` is the accessor; ``state.sessions`` is the SessionManager and
+            # holds sessions rather than chat slots. A channel-bound loop has no slot
+            # window at all, which is why this returns rather than inventing one: the
+            # verdict is still on the loop record and in the decisions log.
+            slot = state.get_slot(loop.slot_key)
+            if slot is None:
+                return
+            from kiro_crew.dashboard.state import append_and_surface
+
+            text, _ = redact_exfiltration_urls(line)
+            text, _ = redact_credentials(text)
+            await asyncio.to_thread(append_and_surface, state, slot, "notice", text, "msg msg-info")
+
         self.autonudge_svc = AutoNudgeService(
             base_dir=data_home(),
             on_fire=_fire,
             on_monitor_tick=_monitor_tick,
+            collect_judge_evidence=_collect_judge_evidence,
+            emit_judge_notice=_emit_judge_notice,
         )
 
         def _monitor_owner_session_id(loop: NudgeLoop) -> str:

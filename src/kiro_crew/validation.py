@@ -1365,8 +1365,109 @@ MONITOR_START_SCHEMA = ToolSchema(
         # redaction, which is the one that governs what gets stored, because
         # redaction can grow the string.
         FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
+        # The wake judge's brief. A shape check only at this layer: the inner bounds
+        # live in validate_judge_spec, which the arm path applies, for the reason the
+        # banner cap is re-checked there -- what gets STORED is what needs bounding.
+        # Accepted and stored even when the judge's consent scope is off, so an armed
+        # loop survives the switch being granted later.
+        #
+        # ``bool`` is admitted because ``judge: false`` is the opt-out: a gated loop
+        # that names no brief is screened under the default, so refusing the judge
+        # needs a spelling of its own. Only ``false`` survives validate_judge_spec.
+        FieldSpec("judge", (dict, bool)),
     ],
 )
+
+#: Bounds for one wake-judge brief. These govern what gets STORED on the loop and
+#: therefore what leaves the machine on every tick, which is why they live beside the
+#: schema rather than only inside the point: the schema's ``dict`` check says the
+#: field is an object, and this says the object is small.
+MAX_JUDGE_TARGETS = 8
+MAX_JUDGE_TARGET_CHARS = 200
+MAX_JUDGE_CRITERION_CHARS = 500
+#: The only keys a brief may carry. Closed, and an unknown key is REFUSED rather
+#: than dropped: a misspelled ``wake_when`` that silently vanished would leave the
+#: owner believing they had armed a criterion the judge never received.
+JUDGE_SPEC_KEYS = frozenset({"targets", "wake_when", "quiet_when"})
+
+#: The normalised form of ``judge: false``. A RESERVED key, deliberately absent from
+#: :data:`JUDGE_SPEC_KEYS`, so the only spelling a caller has for the opt-out is the
+#: boolean: an owner writing ``{"off": true}`` by hand is refused as an unknown key
+#: rather than given a second way to say the same thing. The persisted loader keeps
+#: the key, because it has to reload what this function stored.
+JUDGE_OFF_KEY = "off"
+
+
+def judge_is_off(spec: object) -> bool:
+    """Whether *spec* is the stored opt-out rather than a brief. Never raises."""
+    return isinstance(spec, dict) and spec.get(JUDGE_OFF_KEY) is True
+
+
+def validate_judge_spec(raw: object) -> dict[str, object]:
+    """One wake-judge brief, normalised and bounded, or raise :class:`ValidationError`.
+
+    ``{}`` for an absent brief. An empty object is legal and means "no criteria of my
+    own": a gated loop carrying one is screened under the DEFAULT brief, so an empty
+    object is not how the judge is taken off. ``judge: false`` is -- it normalises to
+    the reserved :data:`JUDGE_OFF_KEY` marker, which the tick reads as an explicit
+    bypass.
+
+    Targets are bounded and de-duplicated but NOT resolved here -- whether a
+    ``chat-*`` key names a readable session is an authorization question, answered
+    per tick by the creator-only read, and a target that refuses is dropped then.
+    Checking it at arm time would only tell the owner what was true at arm time.
+    """
+    if raw is None:
+        return {}
+    if raw is False:
+        return {JUDGE_OFF_KEY: True}
+    if raw is True:
+        # Refused rather than read as "use the default", because the default already
+        # applies to every gated loop that names no brief. Accepting it would give one
+        # meaning two spellings, and the owner who typed it is more likely to have
+        # meant the opt-out.
+        raise ValidationError(
+            "judge", "use false to bypass the judge; the default brief needs no argument"
+        )
+    if not isinstance(raw, dict):
+        raise ValidationError("judge", "must be an object or false")
+    unknown = sorted(set(raw) - JUDGE_SPEC_KEYS)
+    if unknown:
+        raise ValidationError("judge", f"unknown key(s): {', '.join(unknown)}")
+    out: dict[str, object] = {}
+    targets = raw.get("targets")
+    if targets is not None:
+        if not isinstance(targets, (list, tuple)):
+            raise ValidationError("judge.targets", "must be a list")
+        if len(targets) > MAX_JUDGE_TARGETS:
+            raise ValidationError("judge.targets", f"at most {MAX_JUDGE_TARGETS} targets")
+        cleaned: list[str] = []
+        for item in targets:
+            if not isinstance(item, str):
+                raise ValidationError("judge.targets", "every target must be a string")
+            value = item.strip()
+            if not value:
+                continue
+            if len(value) > MAX_JUDGE_TARGET_CHARS:
+                raise ValidationError(
+                    "judge.targets", f"a target may not exceed {MAX_JUDGE_TARGET_CHARS} chars"
+                )
+            if value not in cleaned:
+                cleaned.append(value)
+        out["targets"] = cleaned
+    for key in ("wake_when", "quiet_when"):
+        criterion = raw.get(key)
+        if criterion is None:
+            continue
+        if not isinstance(criterion, str):
+            raise ValidationError(f"judge.{key}", "must be a string")
+        if len(criterion) > MAX_JUDGE_CRITERION_CHARS:
+            raise ValidationError(
+                f"judge.{key}", f"may not exceed {MAX_JUDGE_CRITERION_CHARS} chars"
+            )
+        out[key] = criterion
+    return out
+
 
 # monitor_update revises the loop already bound to the calling session. Every
 # field is optional (a no-field call is a no-op the handler rejects), and the
@@ -1388,6 +1489,11 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         # Same bound as the arm side, for the reason the comment above gives: a
         # loop must not be updatable into a state monitor_start would refuse.
         FieldSpec("banner", str, max_len=MAX_BANNER_CHARS),
+        # Same shape check as the arm side, and the same reason: revising a loop must
+        # not be a way to store a judge brief arming would have refused. ``judge:
+        # false`` is what takes the judge off a live loop; an empty object only drops
+        # the owner's own criteria, and a gated loop then runs under the default.
+        FieldSpec("judge", (dict, bool)),
     ],
 )
 

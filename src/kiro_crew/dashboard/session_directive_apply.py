@@ -434,6 +434,10 @@ async def _monitor_start(
         # rather than erroring. The authorizer owns the cap and both redaction
         # passes, so nothing is validated twice by routing through it.
         banner=str(args.get("banner") or ""),
+        # Named explicitly for the reason the comment above gives: this call has no
+        # splat, so a brief the tool accepted and this line omitted would be dropped
+        # without a word -- the loop would arm with no judge and nothing would say so.
+        judge=args.get("judge") if isinstance(args.get("judge"), dict) else None,
         source="mcp-directive",
         caller="session-directive",
         gate=gate,
@@ -784,6 +788,9 @@ async def _monitor_update(
         # as "leave unchanged", while an explicit "" reaches it as a clear -- the
         # distinction the handler preserved by keeping a blank banner in the patch.
         banner=patch.get("banner"),
+        # Absent leaves the brief alone; ``{}`` clears it. Same absent-vs-explicit
+        # distinction as ``banner`` above, preserved by the tool surface.
+        judge=patch.get("judge"),
         # A message write with NO baseline SKIPS the stale check rather than failing it, so
         # hand it the token read above -- scoped to the message case, as the handler's 409 is.
         expect_fingerprint=(baseline_token if patch.get("message") is not None else None),
@@ -858,7 +865,14 @@ async def _structured_monitor_update(
     # objective as the transcript row), so it belongs with the legacy fields the
     # structured path refuses. Without it here, ``monitor_update`` would accept a
     # banner into the patch, drop it, and report success -- a silent no-op.
-    legacy_only = sorted(set(patch) & {"message", "max_cycles", "active", "banner"})
+    #
+    # ``judge`` is the same class and reaches this path the same way: the schema
+    # offers it on EVERY ``monitor_update``, so arming a structured monitor and then
+    # sending a brief is two ordinary steps. A structured monitor is probe-first and
+    # holds no brief, so the field has nowhere to go here -- and an owner who is told
+    # their criterion was armed, while every tick keeps firing on the typed probe
+    # alone, has no way to discover that from the acknowledgement.
+    legacy_only = sorted(set(patch) & {"message", "max_cycles", "active", "banner", "judge"})
     if legacy_only:
         raise _DirectiveDenied(
             "monitor_update cannot apply legacy fields to a structured monitor: "
