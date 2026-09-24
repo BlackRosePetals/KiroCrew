@@ -6004,6 +6004,8 @@
     "chatPane": {
       "agent_list": "エージェントリスト",
       "close_pane": "ペインを閉じる",
+      "crewmate_quiet": "{{name}} はまだあなたに何も話していません。",
+      "crewmate_quiet_where": "これまでの作業は「作業ログ」で確認してください。",
       "earlier_messages_load_failed": "以前のメッセージを読み込めませんでした。会話の先頭までスクロールすると再試行できます。",
       "earlier_messages_open_session": "以前のメッセージ — セッション全体を開く（分割表示を閉じます）",
       "earlier_messages_unavailable": "以前のメッセージはこのセッションの履歴では利用できなくなりました。",
@@ -10073,6 +10075,30 @@
         "thinking": "考え中",
         "thought_process": "思考プロセス"
       },
+      "thread": {
+        "title": "スレッド",
+        "close": "スレッドを閉じる",
+        "reply_in_thread": "スレッドで返信",
+        "open_thread": "スレッドを開く",
+        "replies_count_other": "{{count}} 件の返信",
+        "last_reply": "最終返信：{{when}}",
+        "you": "あなた",
+        "no_replies_yet": "まだ返信はありません",
+        "replying": "{{name}} が返信中…",
+        "reply_placeholder": "スレッドで返信…",
+        "reply_after_retry": "「再試行」を押してスレッドを読み込んでから返信してください。",
+        "send_reply": "返信を送信",
+        "err_replying": "{{name}} はまだ返信中です。その返信を待ってください。",
+        "err_parent_gone": "そのメッセージはもうこのチャットにありません。",
+        "err_too_long": "その返信は長すぎます。短くしてもう一度お試しください。",
+        "err_full": "このスレッドは上限に達しました。メインのチャットで質問してください。",
+        "err_chat_full": "このチャットには返信スレッドの空きがありません。続けるには新しいチャットを始めてください。",
+        "err_send_failed": "返信を送れませんでした。送信を押してもう一度お試しください。",
+        "err_load_failed": "このスレッドを読み込めませんでした。",
+        "err_summary_failed": "このチャットの返信スレッドを読み込めませんでした。返信は保存されたままです。チャット自体は最新です。",
+        "err_flag_failed": "このチャットで返信スレッドが有効かどうかを確認できませんでした。チャット自体は最新です。返信があれば保存されたままです。",
+        "retry": "再試行"
+      },
       "toolCallLine": {
         "diff_truncated": "diff は切り詰められました",
         "aria_awaiting_approval": "ツールの承認待ち: {{label}}",
@@ -14049,6 +14075,14 @@
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json のアプリリストが読み取れなかったため、ここに空で表示されています。ファイルが有効な JSON になるまで、エージェントはそれらに依存するすべてのアクションを拒否します。",
         "your_chat_sessions_were_restarted_so_this_takes": "チャットセッションが再起動されたため、すぐに反映されます。Kiro はセッションごとにツールリストを一度だけ読み取るため、オープンなチャットではそれを取得できなかったはずです。メッセージはまだそこにあります。エージェントは次のメッセージでコンテキストを再度読み取ります。"
       },
+      "crewmatesSection": {
+        "title": "クルーメンバー",
+        "reply_threads": "クルーメンバーのチャットメッセージへの返信スレッド",
+        "reply_threads_desc": "クルーメンバーのチャットのどのメッセージにも独自の返信スレッドを持たせ、チャットを表示したままサイドパネルで開きます。オフにすると「スレッドで返信」は表示されず、既存のスレッドは削除ではなく非表示になります。",
+        "failed_to_save": "クルーの設定を保存できませんでした。もう一度お試しください。",
+        "failed_to_load": "クルーの設定を読み込めませんでした。",
+        "retry": "再試行"
+      },
       "developerPanel": {
         "developer_mode": "開発者モード",
         "developer_tools": "開発者ツール",
@@ -15731,10 +15765,10 @@
       "notes_truncated_notice": "このノートはパネルに表示されている分より長く、残りはファイルにのみあります。",
       "session_record": "この会話",
       "recent_activity": "最近のアクティビティ",
-      "activity_chat": "会話",
+      "activity_chat": "1 回の実行: このクルーメイトが作業のために起動した 1 回 — パトロール、スケジュール、またはあなたが開いたチャット",
       "activity_routed": "タスクのためにオーケストレーターが自動選択",
       "activity_empty": "記録されたアクティビティはまだありません。",
-      "activity_chat_count_other": "会話 {{count}} 回",
+      "activity_chat_count_other": "実行 {{count}} 回",
       "activity_routed_count_other": "自動選択 {{count}} 回",
       "activity_more_days_other": "さらに {{count}} 日表示",
       "activity_capped": "最新のイベントのみ読み込まれています。表示中の最も古い日は不完全な場合があります。",

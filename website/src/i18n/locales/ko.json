@@ -6004,6 +6004,8 @@
     "chatPane": {
       "agent_list": "에이전트 목록",
       "close_pane": "창 닫기",
+      "crewmate_quiet": "{{name}}은(는) 아직 당신에게 아무 말도 하지 않았습니다.",
+      "crewmate_quiet_where": "지금까지 한 작업은 작업 로그에서 확인하세요.",
       "earlier_messages_load_failed": "이전 메시지를 불러올 수 없습니다. 대화의 맨 위로 스크롤하여 다시 시도하세요.",
       "earlier_messages_open_session": "이전 메시지 — 전체 세션 열기(분할 보기 닫힘)",
       "earlier_messages_unavailable": "이전 메시지를 이 세션 기록에서 더 이상 사용할 수 없습니다.",
@@ -10073,6 +10075,30 @@
         "thinking": "생각 중",
         "thought_process": "사고 과정"
       },
+      "thread": {
+        "title": "스레드",
+        "close": "스레드 닫기",
+        "reply_in_thread": "스레드에서 답글 달기",
+        "open_thread": "스레드 열기",
+        "replies_count_other": "답글 {{count}}개",
+        "last_reply": "마지막 답글 {{when}}",
+        "you": "나",
+        "no_replies_yet": "아직 답글이 없습니다",
+        "replying": "{{name}}이(가) 답글을 쓰고 있습니다…",
+        "reply_placeholder": "스레드에서 답글…",
+        "reply_after_retry": "다시 시도를 눌러 스레드를 불러온 다음 답글을 남기세요.",
+        "send_reply": "답글 보내기",
+        "err_replying": "{{name}}이(가) 아직 답글을 쓰고 있습니다. 그 답글을 기다려 주세요.",
+        "err_parent_gone": "그 메시지는 이제 이 채팅에 없습니다.",
+        "err_too_long": "답글이 너무 깁니다. 줄여서 다시 시도해 주세요.",
+        "err_full": "이 스레드가 가득 찼습니다. 대신 메인 채팅에서 물어보세요.",
+        "err_chat_full": "이 채팅에는 스레드 답글을 더 담을 공간이 없습니다. 계속하려면 새 채팅을 시작하세요.",
+        "err_send_failed": "답글이 전송되지 않았습니다. 보내기를 눌러 다시 시도해 주세요.",
+        "err_load_failed": "이 스레드를 불러올 수 없습니다.",
+        "err_summary_failed": "이 채팅의 답글 스레드를 불러올 수 없습니다. 남긴 답글은 그대로 저장되어 있으며, 채팅 자체는 최신 상태입니다.",
+        "err_flag_failed": "이 채팅에서 답글 스레드가 켜져 있는지 확인할 수 없습니다. 채팅 자체는 최신 상태이며, 남긴 답글이 있다면 그대로 저장되어 있습니다.",
+        "retry": "다시 시도"
+      },
       "toolCallLine": {
         "diff_truncated": "diff가 잘렸습니다",
         "aria_awaiting_approval": "도구 승인 대기 중: {{label}}",
@@ -14049,6 +14075,14 @@
         "the_app_lists_in_computer_use_json_could_not_be": "computer_use.json의 앱 목록을 읽을 수 없어 여기에는 비어 있는 상태로 표시됩니다. 파일이 유효한 JSON이 될 때까지 에이전트는 이 목록에 의존하는 모든 작업을 거부합니다.",
         "your_chat_sessions_were_restarted_so_this_takes": "채팅 세션이 다시 시작되어 이 변경이 즉시 적용됩니다 — Kiro는 세션마다 도구 목록을 한 번만 읽으므로 열려 있던 채팅은 그렇지 않으면 변경을 반영하지 못합니다. 메시지는 그대로 남아 있으며, 에이전트는 다음 메시지에서 컨텍스트를 다시 읽습니다."
       },
+      "crewmatesSection": {
+        "title": "크루 멤버",
+        "reply_threads": "크루 멤버 채팅 메시지의 답글 스레드",
+        "reply_threads_desc": "크루 멤버 채팅의 어떤 메시지에도 답글 스레드를 달 수 있게 하고, 채팅을 보면서 사이드 패널에서 열 수 있습니다. 끄면 스레드에서 답글 달기가 나타나지 않고 기존 스레드는 삭제되지 않고 숨겨집니다.",
+        "failed_to_save": "크루 설정을 저장할 수 없습니다. 다시 시도하세요.",
+        "failed_to_load": "크루 설정을 불러올 수 없습니다.",
+        "retry": "다시 시도"
+      },
       "developerPanel": {
         "developer_mode": "개발자 모드",
         "developer_tools": "개발자 도구",
@@ -15731,10 +15765,10 @@
       "notes_truncated_notice": "이 메모는 패널에 표시된 것보다 길며, 나머지는 파일에만 있습니다.",
       "session_record": "이 대화",
       "recent_activity": "최근 활동",
-      "activity_chat": "대화",
+      "activity_chat": "실행 1회: 이 크루메이트가 작업을 위해 깨어난 한 번 — 순찰, 일정, 또는 사용자가 연 채팅",
       "activity_routed": "작업을 위해 오케스트레이터가 자동 선택함",
       "activity_empty": "기록된 활동이 아직 없습니다.",
-      "activity_chat_count_other": "대화 {{count}}회",
+      "activity_chat_count_other": "실행 {{count}}회",
       "activity_routed_count_other": "자동 선택 {{count}}회",
       "activity_more_days_other": "{{count}}일 더 보기",
       "activity_capped": "최근 이벤트만 불러왔습니다. 표시된 가장 오래된 날은 불완전할 수 있습니다.",
