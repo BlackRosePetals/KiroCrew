@@ -157,6 +157,7 @@ _SENSITIVE_MASK = "••••••••"
 # arrives.
 _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "member_id",
+    "display_name",
     "description",
     "triggers",
     "kiro_agent",
