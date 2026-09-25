@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -3066,6 +3067,11 @@ class ContextBuilder:
     of a session (or after a context reset).
     """
 
+    # The delegation-capacity token a prompt carries, and how many sessions'
+    # readings of it are held at once.
+    _MAX_SUBAGENTS_TOKEN = "{{MAX_SUBAGENTS}}"
+    _CAP_FIGURE_SESSIONS = 512
+
     @staticmethod
     def get_memory_for(
         workspace: str | None = None, memory_store: str | None = None
@@ -3208,6 +3214,12 @@ class ContextBuilder:
         self.lessons = lessons or LessonStore()
         self.conversation_log = conversation_log
         self.channel_history = channel_history
+        # One reading of the delegation cap per session key; see
+        # `_session_cap_figure`. One builder serves every session in the
+        # gateway and is reached from a thread executor, so the memo's
+        # read-evict-insert transaction is guarded.
+        self._cap_figures: dict[str, str] = {}
+        self._cap_figures_lock = threading.Lock()
         # Captured for the Jev decision point at `skills.select`. Production
         # reaches `build_message` only through `run_in_embed_pool`, a thread
         # executor with no running loop, so the point cannot obtain one where it
@@ -3254,37 +3266,104 @@ class ContextBuilder:
         return prompt.replace("{bot_name}", live_name or self._bot_name)
 
     @staticmethod
-    def _resolve_prompt_templates(prompt: str, session_key: str) -> str:
+    def _live_cap_figure() -> str:
+        """The concurrent sub-agent cap in force, as a prompt spells it.
+
+        ``agent.max_subagents`` is a ceiling the adaptive controller may be
+        dispatching 1 at a time under, so the figure is the cap IN FORCE -- a
+        registry read (``resource_status.adaptive_exec_cap``) this
+        gateway-process path can afford. When no controller runs here (the CLI,
+        tests) the configured ceiling is used and labelled as one. Both readings
+        are derived from live host conditions, which is why a session holds one
+        of them: see :meth:`_session_cap_figure`.
+        """
+        cap = resource_status.adaptive_exec_cap()
+        if cap > 0:
+            return str(cap)
+        # Lazy import: kiro_crew.subagent imports this module, so a
+        # top-level import would cycle.
+        try:
+            from kiro_crew.subagent import (  # circular import: subagent -> context
+                resolve_max_subagents,
+            )
+
+            ceiling = resolve_max_subagents(KiroCrewConfig.load())
+        except Exception:
+            ceiling = 0
+        return f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
+
+    @staticmethod
+    def _cap_memo_key(session_key: str) -> str:
+        """The memo's key for a session: a fixed-size digest of its key.
+
+        ``_CAP_FIGURE_SESSIONS`` caps how MANY readings are held, and a count
+        caps memory only when each thing held is itself bounded. A session key
+        reaches ``build_message`` from the caller at whatever length it likes, and
+        an entry leaves the memo only by eviction, never when its session closes,
+        so an oversized key would stay retained. Digesting it makes every
+        retained key the same size and the cap govern bytes as well as entries.
+        """
+        return hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+
+    def _session_cap_figure(self, session_key: str, *, refresh: bool) -> str:
+        """One session's reading of the delegation cap, taken once.
+
+        The contract block is rendered twice for a session -- at session start,
+        and again when compaction restores it -- while the reading underneath
+        the figure moves with host load. Reading it per assembly therefore hands
+        a compacted session a contract that differs from the one it was given,
+        in a number it never chose. A session start takes the reading and every
+        later rendering for that session reuses it, so the figure still tracks
+        the host from session to session while one session's contract holds
+        still. A session whose start this process did not serve has no reading
+        and takes a live one.
+
+        The memo holds ``_CAP_FIGURE_SESSIONS`` readings, so on a gateway that
+        starts more sessions than that the reuse is not unconditional: an evicted
+        session's restoring render finds no reading and takes a live one, which
+        is the drift this method otherwise removes. Eviction therefore takes the
+        least recently USED entry rather than the oldest one -- a hit moves its
+        key to the end, so a session that keeps rendering its contract stops
+        being the next one dropped. That orders the victims sensibly; it does not
+        make the reuse a guarantee, and nothing distinguishes an evicted session
+        from one this process never started.
+
+        One builder serves every session in the gateway and is reached from a
+        thread executor, so a sibling thread can evict this key between a
+        lookup and a second read of it -- eviction takes the oldest entry, and
+        the restoring render of the oldest session is exactly the caller that
+        would read it back. The figure is therefore returned as a local, and the
+        lookup, eviction and insertion are held under one lock.
+        """
+        memo = self._cap_figures
+        key = self._cap_memo_key(session_key)
+        with self._cap_figures_lock:
+            if not refresh:
+                cached = memo.get(key)
+                if cached is not None:
+                    memo[key] = memo.pop(key)
+                    return cached
+            figure = self._live_cap_figure()
+            if key not in memo and len(memo) >= self._CAP_FIGURE_SESSIONS:
+                memo.pop(next(iter(memo)), None)
+            memo[key] = figure
+            return figure
+
+    @staticmethod
+    def _resolve_prompt_templates(prompt: str, session_key: str, cap_figure: str = "") -> str:
         """Resolve conditional template blocks in prompt text.
 
         Dashboard sessions get a short widget pointer; Slack/CLI get it stripped.
-        The ``{{MAX_SUBAGENTS}}`` token is replaced with the concurrent
-        sub-agent cap IN FORCE, so the delegation guidance carries the number
-        the model can actually fan out to. ``agent.max_subagents`` is a ceiling
-        the adaptive controller may be dispatching 1 at a time under; the live
-        cap is a registry read (``resource_status.adaptive_exec_cap``), which
-        this gateway-process path can afford on every assembly. When no
-        controller runs here (the CLI, tests) the configured ceiling is used and
-        labelled as one. Resolved for every transport (not just dashboard),
-        before the widget-block branch.
+        The ``{{MAX_SUBAGENTS}}`` token is replaced with the delegation capacity
+        the model can actually fan out to: ``cap_figure`` when the caller holds
+        that session's reading, otherwise a live one. Resolved for every
+        transport (not just dashboard), before the widget-block branch.
         """
-        if "{{MAX_SUBAGENTS}}" in prompt:
-            cap = resource_status.adaptive_exec_cap()
-            if cap > 0:
-                figure = str(cap)
-            else:
-                # Lazy import: kiro_crew.subagent imports this module, so a
-                # top-level import would cycle.
-                try:
-                    from kiro_crew.subagent import (  # circular import: subagent -> context
-                        resolve_max_subagents,
-                    )
-
-                    ceiling = resolve_max_subagents(KiroCrewConfig.load())
-                except Exception:
-                    ceiling = 0
-                figure = f"{ceiling} (configured ceiling)" if ceiling > 0 else "several"
-            prompt = prompt.replace("{{MAX_SUBAGENTS}}", figure)
+        if ContextBuilder._MAX_SUBAGENTS_TOKEN in prompt:
+            prompt = prompt.replace(
+                ContextBuilder._MAX_SUBAGENTS_TOKEN,
+                cap_figure or ContextBuilder._live_cap_figure(),
+            )
 
         cfg = KiroCrewConfig.load()
 
@@ -4538,11 +4617,14 @@ class ContextBuilder:
         session_key: str | None,
         is_cc: bool,
         private_owner: bool,
+        session_start: bool,
     ) -> str:
         """Return the agent contract for the ``[AGENT SYSTEM PROMPT]`` block, or "".
 
         Session start and post-compaction reinjection both call this, so the
-        contract a compacted session gets back is the one it started with.
+        contract a compacted session gets back is the one it started with. Only
+        a session start takes a fresh reading of the delegation cap; the call
+        that restores the block reuses the session's own.
         """
         is_custom = bool(agent) and agent != "kirocrew"
         agent_prompt: str
@@ -4573,7 +4655,15 @@ class ContextBuilder:
                 agent_prompt = ""
         if not agent_prompt:
             return ""
-        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
+        # Any host-derived token in this prompt must be snapshotted per session:
+        # the contract block is asserted byte-identical across a session's
+        # renders, so a token resolved live on each render cannot hold it.
+        cap_figure = (
+            self._session_cap_figure(session_key or "", refresh=session_start)
+            if self._MAX_SUBAGENTS_TOKEN in agent_prompt
+            else ""
+        )
+        agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "", cap_figure)
         return self._substitute_bot_name(agent_prompt)
 
     def build_message(
@@ -4798,6 +4888,7 @@ class ContextBuilder:
                     session_key=session_key,
                     is_cc=is_cc,
                     private_owner=bool(_private_owner),
+                    session_start=True,
                 )
             )
             if agent_prompt:
@@ -5001,6 +5092,7 @@ class ContextBuilder:
                 session_key=session_key,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
+                session_start=False,
             )
             if _agent_prompt:
                 parts.append(
